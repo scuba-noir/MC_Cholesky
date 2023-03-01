@@ -245,7 +245,7 @@ def mc_test_new(initial_date, end_date, data_df):
         df_3 = pd.DataFrame()
         for q in range(len(pct_chg_ls)):
             df_3[labels[q]] = pct_chg_ls[q].iloc[:,x]
-        corr_ret = pd.DataFrame(np.matmul(chol, df_3.to_numpy().T), index = labels).T
+        corr_ret = pd.DataFrame(np.matmul(chol, df_3.to_numpy().T), index = labels).T #This line takes the cholesky matrix and applies it to df_3 (temp dataframe of sim output data)
         sugar_ls_final.append(corr_ret['NY No.11'].values)
         hydrous_ls_final.append(corr_ret['Hydrous Ethanol'].values)
         anhydrous_ls_final.append(corr_ret['Anhydrous Ethanol'].values)
