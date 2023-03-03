@@ -4,6 +4,7 @@ import math
 import pymysql
 import pdblp
 import requests
+import datetime as dt
 
 from datetime import datetime
 from datetime import timedelta
@@ -11,29 +12,23 @@ from datetime import date
 from calendar import monthrange
 
 
-FORECAST_DICT = {
-     'NY No.11':[],
-    'Hydrous Ethanol':[],
-    'Anhydrous Ethanol':[],
-    'Fertilizer Costs':[],
-    'Brent Crude':[],
-    'USDBRL':[],
-    'Energy Prices':[],
-    'SBMAR1 Comdty':[],
-    'SBMAY1 Comdty':[],
-    'SBJUL1 Comdty':[],
-    'SBOCT1 Comdty':[],
-    'SBMAR2 Comdty':[]
+FORECASTS = {
+    'NY No.11':{datetime(2023,3,31): 18.13, datetime(2024,3,31): 16.65},
+    'Hydrous Ethanol':{datetime(2023,3,31): 3100, datetime(2024,3,31): 2900},
+    'Anhydrous Ethanol':{datetime(2023,3,31): 3.350, datetime(2024,3,31): 3.200},
+    'Fertilizer Costs':{datetime(2023,3,31): 670, datetime(2024,3,31): 525},
+    'Brent Crude':{datetime(2023,3,31): 90, datetime(2024,3,31): 78.20},
+    'USDBRL':{datetime(2023,3,31): 5.358, datetime(2024,3,31): 5.692},
+    'Energy Prices':{datetime(2023,3,31): 59, datetime(2024,3,31): 47},
+    'SBMAR1 Comdty':{datetime(2023,3,31): 18.13, datetime(2024,3,31): 16.65},
+    'SBMAY1 Comdty':{datetime(2023,3,31): 18.13, datetime(2024,3,31): 16.65},
+    'SBJUL1 Comdty':{datetime(2023,3,31): 18.13, datetime(2024,3,31): 16.65},
+    'SBOCT1 Comdty':{datetime(2023,3,31): 18.13, datetime(2024,3,31): 16.65},
+    'SBMAR2 Comdty':{datetime(2023,3,31): 18.13, datetime(2024,3,31): 16.65},
 }
-#Grabs Market Forecasts from Hedgebot Server API
-FORECASTS = requests.get('http://3.142.53.5:8000/api/market_forecast_api/', params={'forecast_dict':FORECAST_DICT})
-
 
 def attach_market_forecast(data_ls):
-    """
-    Takes the market forecasts from the hedgebot api and adds them to Monte Carlo input data depending on the 
-    variable and dates referenced in input variable data_ls
-    """
+
     date_df = pd.DataFrame(data_ls, columns = ['Date'])
     date_df['Date'] = pd.to_datetime(date_df['Date'], format= "%d/%m/%Y")
     forecasts_df = 1
@@ -95,21 +90,22 @@ def attach_market_forecast(data_ls):
     return final_df
  
 class GeometricBrownianMotion:
-    """
-    This class acts as a Monte Carlo simulation
-    A new object is created for each monte carlo simulation
-    The simulations are calculated through the simulate_paths function
-    """
+
     def simulate_paths(self):
         while(self.T - self.dt > 0):
-            dWt = np.random.normal(0, math.sqrt(self.dt))  # Brownian motion
-            dYt = self.drift*self.dt + self.volatility*dWt  # Change in price
-            self.current_price += self.current_price*dYt  # Add the change to the current price
+            drift_n = self.drift
+            dWt = np.random.normal(0, np.sqrt(self.dt))  # Brownian motion
+            dYt = (drift_n - 0.5*(self.volatility**2))*self.dt + self.volatility*dWt
+            if (self.T == 1) and (self.print_bool == True):
+                print('Drift: ' + str(drift_n))
+                print('Dyt: ' + str(dYt))
+                print('dwt: ' + str(dWt))
+            self.current_price = self.current_price*(np.exp(dYt))  # Add the change to the current price
             self.prices.append(self.current_price)  # Append new price to series
-            self.T -= self.dt  # Account for the step in time
-            
-    #__init__ is an automated function that is called when object is created
-    def __init__(self, initial_price, drift, volatility, dt, T):
+            self.T -= self.dt  # Accound for the step in time
+
+    def __init__(self, initial_price, drift, volatility, dt, T, average_returns, std_of_returns, forecast_value, print_bool):
+        self.print_bool = print_bool
         self.current_price = initial_price
         self.initial_price = initial_price
         self.drift = drift
@@ -117,51 +113,61 @@ class GeometricBrownianMotion:
         self.dt = dt
         self.T = T
         self.prices = []
+        self.average_returns = average_returns
+        self.std_of_returns = std_of_returns
+        self.forecast_value = forecast_value
         self.simulate_paths()
+       
 
-        
-def add_variable_path(data_df, day_duration, forecast_value):
-    """
-    This function is called by the main function (mc_test_new) and creates a GeometricBrownianMotion object for the given variable
-    This function first calculates the required metrics for the Monte Carlo simulation (initial_price, drift, volatility, dt, T)
-    then sends the variables to GeometricBrownianMotion which returns the path or Monte Carlo simulation data
-    
-    The input for this function includes data_df (the input data for the different market variables), day_duration (days to simulation), forecast_value
-    (the forecasts for the market variable)
- 
-    """
+def add_variable_path(data_df, day_duration, forecast_value, save_bool):
     data = data_df
     data.columns = ['price']
-    data['pct_chg'] = data.price.pct_change().fillna(0)
-    data['log_ret'] = (np.log(data.price) - np.log(data.price.shift(1))).fillna(0)
+    data = pd.DataFrame(data.iloc[::-1])
+    data['pct_chg'] = data.price.pct_change()
+    data_pct_chg = data['pct_chg'].iloc[1:]
+    data['log_ret'] = (np.log(data.price) - np.log(data.price.shift(1)))
+    data_log_ret = data['log_ret'].iloc[1:]
+    average_returns = data_pct_chg.mean()
+    std_of_returns = data_pct_chg.std()
+    if save_bool:
+        data.to_csv("pre_data.csv")
     paths = 1000
     initial_price = data.price.iat[-1]
-    drift = (forecast_value - initial_price) / initial_price
-    volatility =  data.log_ret.std()
-    dt = 1/day_duration
-    T = 1
+    volatility =  data_log_ret.std()
+    drift = ((forecast_value - initial_price) / initial_price) / day_duration
+    dt = 1
+    T = day_duration
     price_paths = []
 
+    if save_bool:
+        print('Initial Price: ' + str(initial_price))
+        print('Forecast Value: ' + str(forecast_value))
+        print('dt: ' + str(dt))
+        print('Day Duration: ' + str(day_duration))
+        print('Drift: ' + str(drift))
+        print('Volatility: ' + str(volatility))
+        print('Data PCT: ' +str(data_pct_chg))
+
+
     for i in range(0, paths):
-        price_paths.append(GeometricBrownianMotion(initial_price, drift, volatility, dt, T).prices)
+        price_path_obj = GeometricBrownianMotion(initial_price, drift, volatility, dt, T, average_returns, std_of_returns, forecast_value, save_bool)
+        price_paths.append(price_path_obj.prices)
 
     pct_chg_paths = pd.DataFrame(price_paths).T.pct_change().fillna(0)
-
+    if save_bool == True:
+        pd.DataFrame(price_paths).T.to_csv('230302_price_change_path.csv')
+        pct_chg_paths.to_csv('230302_percent_change_path.csv')
     return price_paths, pct_chg_paths
 
 def rescale_prices(data_df, initial_price):
-    """
-    This function rescales the prices after the Monte Carlo simulation based on the initial price (value of variable at day_0 of simulation)
-    """
+
     data_df.iloc[0, :] *= initial_price
     for i in range(1, data_df.shape[0]):
         data_df.iloc[i, :] = data_df.iloc[i-1, :] * data_df.iloc[i, :]
     return data_df
 
 def format_upload_new_data(data_df):
-    """
-    This function reformats the aggregated output data so that it is compatible with Hedgebot Server API database
-    """
+
     temp_date_index = data_df['date']
     start_date = min(temp_date_index)
     end_date = max(temp_date_index)
@@ -181,42 +187,47 @@ def format_upload_new_data(data_df):
     
     return temp_row_ls
 
+def bizday_calc_func(start_date, num_days):
+    my_start_date = start_date
+    my_num_days = abs(num_days)
+    inc = 1 if num_days > 0 else -1
+    while my_num_days > 0:
+      my_start_date += timedelta(days=inc)
+      weekday = my_start_date.weekday()
+      if weekday >= 5:
+        continue
+      my_num_days -= 1
+    return my_start_date
+
 def mc_test_new(initial_date, end_date, data_df):
-    """
-    This is the function that runs entire Monte Carlo Simulation
-    The input is called by user and includes initial_date (day_0 of sim), end_date (day_n of sim) and data_df (sim input data)
-    """
     
-    """
-    Stores backup list of dates and calcs needed date references for simulation
-    By the end of this function, the method has stored a serialized / scaled dataframe of input data for simulation
-    """
-    date_range = pd.date_range(start = initial_date, end = end_date, freq='D')
+    date_range = pd.date_range(start = initial_date, end = end_date, freq='W')
     temp = data_df
     temp['Date'] = pd.to_datetime(temp['Date'])
     temp = temp.loc[temp['Date'] <= initial_date]
-    diff = end_date - initial_date
-    diff_days = len(date_range) 
-    data_initial_date = initial_date-diff
+    diff = (end_date - initial_date)
+    diff_days = len(date_range)
+    data_initial_date = datetime.now() - dt.timedelta(days=3*365)
+
     temp = temp.loc[temp['Date'] >= data_initial_date]
+
     temp =temp.sort_index(axis = 0, ascending = False)
     temp = temp.drop(['Date'], axis = 1)
     temp = temp.dropna()
-
-    corr = np.corrcoef(temp, rowvar = False) #Cholesky matrix
-    chol = np.linalg.cholesky(corr) #Cholesky matrix
+    corr = np.corrcoef(temp, rowvar = False)
+    chol = np.linalg.cholesky(corr)
 
     pct_chg_ls =[]
     price_path_ls = []
     initial_prices = {}
-    """
-    This section runs the Monte Carlo simulations based on the amount of input variables in temp (dataframe)
-    By the end of this section, the code has stored simulation data into the empty lists initiated above
-    """
+
     for i in range(len(temp.columns)):
+        save_boolean = False
         temp_df = temp.loc[:,[temp.columns[i]]]
         forecast_value = FORECASTS[temp.columns[i]][end_date]
-        price_paths, pct_chg_paths = add_variable_path(temp_df, diff_days, forecast_value)
+        if i ==0:
+            save_boolean = False
+        price_paths, pct_chg_paths = add_variable_path(temp_df, diff_days, forecast_value, save_boolean)
         price_paths = pd.DataFrame(price_paths)
         initial_prices[temp.columns[i]] = price_paths[0].iat[0]
 
@@ -236,16 +247,14 @@ def mc_test_new(initial_date, end_date, data_df):
     jul1_ls_final = []
     oct1_ls_final = []
     mar2_ls_final = []
-    """
-    This section transforms the Monte Carlo output data with the cholesky matrix 
-    By the end of this section, the code has stored final out data into the empty lists initiated above
-    """
+
     labels = temp.columns
     for x in range(length):
         df_3 = pd.DataFrame()
         for q in range(len(pct_chg_ls)):
             df_3[labels[q]] = pct_chg_ls[q].iloc[:,x]
-        corr_ret = pd.DataFrame(np.matmul(chol, df_3.to_numpy().T), index = labels).T #This line takes the cholesky matrix and applies it to df_3 (temp dataframe of sim output data)
+        
+        corr_ret = pd.DataFrame(np.matmul(chol, df_3.to_numpy().T), index = labels).T
         sugar_ls_final.append(corr_ret['NY No.11'].values)
         hydrous_ls_final.append(corr_ret['Hydrous Ethanol'].values)
         anhydrous_ls_final.append(corr_ret['Anhydrous Ethanol'].values)
@@ -259,9 +268,6 @@ def mc_test_new(initial_date, end_date, data_df):
         oct1_ls_final.append(corr_ret['SBOCT1 Comdty'].values)
         mar2_ls_final.append(corr_ret['SBMAR2 Comdty'].values)
     
-    """
-    Stores rescaled final output data in dataframes
-    """
     sugar_df = pd.DataFrame(sugar_ls_final).T.apply(lambda x: x + 1)
     hydrous_df = pd.DataFrame(hydrous_ls_final).T.apply(lambda x: x + 1)
     anhydrous_df = pd.DataFrame(anhydrous_ls_final).T.apply(lambda x: x + 1)
@@ -275,9 +281,6 @@ def mc_test_new(initial_date, end_date, data_df):
     oct1_df = pd.DataFrame(oct1_ls_final).T.apply(lambda x: x + 1)
     mar2_df = pd.DataFrame(mar2_ls_final).T.apply(lambda x: x + 1)
 
-    """
-    Rescales prices based on rescale_prices method (i.e. transforms them back into independant value paths
-    """
     sugar_df_final = rescale_prices(sugar_df, initial_prices['NY No.11'])
     hydrous_df_final = rescale_prices(hydrous_df, initial_prices['Hydrous Ethanol'])
     anhydrous_df_final = rescale_prices(anhydrous_df, initial_prices['Anhydrous Ethanol'])
@@ -290,10 +293,7 @@ def mc_test_new(initial_date, end_date, data_df):
     jul1_df_final = rescale_prices(jul1_df, initial_prices['SBJUL1 Comdty'])
     oct1_df_final = rescale_prices(oct1_df, initial_prices['SBOCT1 Comdty'])
     mar2_df_final = rescale_prices(mar2_df, initial_prices['SBMAR2 Comdty'])
-
-    """
-    More dataframe management
-    """
+    sugar_df_final.to_csv("final_sugar_price_paths.csv", index=False)
     sugar_df_final['reference'] = 'sugar_1'
     hydrous_df_final['reference'] = 'hydrous'
     anhydrous_df_final['reference'] = 'anhydrous'
@@ -307,10 +307,6 @@ def mc_test_new(initial_date, end_date, data_df):
     oct1_df_final['reference'] = 'sugar_oct1'
     mar2_df_final['reference'] = 'sugar_mar2'
 
-    """
-    Adds dates back to final output dataframes
-    """
-    date_range = pd.date_range(start = initial_date, end = end_date, freq='D')
     if date_range.shape[0] > sugar_df_final.shape[0]:
         diff_range = date_range.shape[0] - sugar_df_final.shape[0]
         date_range = date_range.delete(diff_range)
@@ -337,18 +333,13 @@ def mc_test_new(initial_date, end_date, data_df):
     return final_dict
 
     
-"""
-Legacy date lists to input into run_sim function
-"""
-DATES_to_SIM = [datetime(2022,11,4), datetime(2022,11,18), datetime(2022,12,2), datetime(2022,12,9), datetime(2022,12,16), datetime(2022,12,23), datetime(2023,1,6),datetime(2023,1,13),datetime(2023,1,20),datetime(2023,1,27),]
+
+DATES_to_SIM = [datetime(2023,2,17)]
 FINAL_DATES = [datetime(2024,3,31)]
 
 
-def run_sim(dates_to_sim, final_dates):
-    """
-    This is the main function of the entire script
-    The function first aggregates input data from bloomberg or other input sources and then calls mc_test_new to run Monte Carlo Simulation
-    """
+def run_sim():
+
     security_dict = {'SB1 Comdty':'NY No.11',
                     'BAAWHYDP Index':'Hydrous Ethanol',
                     'BAAWANAB Index':'Anhydrous Ethanol',
@@ -374,8 +365,7 @@ def run_sim(dates_to_sim, final_dates):
     start_date =  date(end_date.year - 5, end_date.month, end_date.day).strftime("%Y%m%d")
     end_date = end_date.strftime("%Y%m%d")
 
-    data_df = con.bdh(ticker_ls, 'PX_LAST', start_date, end_date) #Grabs data from Bloomberg
-
+    data_df = con.bdh(ticker_ls, 'PX_LAST', start_date, end_date)
     
     column_ls = []
     for col in range(0, data_df.shape[1]):
@@ -386,9 +376,9 @@ def run_sim(dates_to_sim, final_dates):
     data_df['Date'] = data_df.index
     final_dict_ls = []
     final_df_aggregate = []
-    for tt in range(len(final_dates)):
-        for zzz in range(len(dates_to_sim)):
-            x = mc_test_new(dates_to_sim[zzz], final_dates[tt], data_df=data_df)
+    for tt in range(len(FINAL_DATES)):
+        for zzz in range(len(DATES_to_SIM)):
+            x = mc_test_new(DATES_to_SIM[zzz], FINAL_DATES[tt], data_df=data_df)
             final_dict_ls.append(x)
             x_df = pd.DataFrame.from_dict(x['sugar_1'])
             for keys in x.keys():
@@ -397,14 +387,10 @@ def run_sim(dates_to_sim, final_dates):
                     final_df_aggregate = temp_x_df
                 else:
                     final_df_aggregate = pd.concat([final_df_aggregate, temp_x_df], ignore_index=True, axis=0)
-        final_df_aggregate.to_csv('backup_save_' + str(zzz) + '.csv')
-        return final_df_aggregate
-    #final_df_aggregate.to_csv("final_output_mc_sim.csv")
+    return final_df_aggregate
 
 def column_reformate():
-    """
-    legacy code
-    """
+
     col_ls = ['forecast_period','reference','mean_returned','std_returned','sim_date','end_date']
     data_df = pd.read_csv('final_output_mc_sim.csv', index_col=False)
     index_range = np.arange(0,726,len(col_ls))
@@ -428,4 +414,6 @@ def column_reformate():
                 final_df_save = pd.concat([final_df_save, temp_df], axis = 0, ignore_index=True)
 
         prev_index = index
+
+
 
